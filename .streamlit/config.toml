@@ -1,12 +1,21 @@
 [theme]
-primaryColor = "#FF6B6B"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F0F2F6"
-textColor = "#262730"
+primaryColor = "#3b82f6"
+backgroundColor = "#0f172a"
+secondaryBackgroundColor = "#1e293b"
+textColor = "#f1f5f9"
+font = "sans serif"
 
 [server]
 port = 8501
 address = "0.0.0.0"
+runOnSave = true
+headless = true
 
 [browser]
 gatherUsageStats = false
+
+[client]
+showErrorDetails = false
+
+[logger]
+level = "info"

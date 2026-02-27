@@ -1,0 +1,604 @@
+"""
+📺 YouTube Intelligence Hub
+Production-ready Streamlit chatbot powered by Google Generative AI (Gemini)
+with MongoDB backend for real-time YouTube video data analysis
+"""
+
+import streamlit as st
+import os
+import sys
+import re
+from pathlib import Path
+from datetime import datetime, timedelta
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SETUP
+# ═══════════════════════════════════════════════════════════════════════════════
+from dotenv import load_dotenv
+load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
+sys.path.insert(0, str(Path(__file__).parent))
+
+st.set_page_config(
+    page_title="YouTube Intelligence Hub",
+    page_icon="🎬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CUSTOM CSS & THEMING
+# ═══════════════════════════════════════════════════════════════════════════════
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&display=swap');
+
+html, body, [class*="css"] {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+    color: #f1f5f9;
+}
+
+.stApp {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+}
+
+h1, h2, h3 {
+    color: #f0f9ff !important;
+    font-weight: 700 !important;
+}
+
+.stButton > button {
+    background: linear-gradient(90deg, #3b82f6 0%, #1e40af 100%) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 10px 24px !important;
+    font-weight: 600 !important;
+}
+
+#MainMenu { visibility: hidden; }
+header { visibility: hidden; }
+footer { visibility: hidden; }
+
+.block-container {
+    padding-top: 2rem !important;
+}
+
+.ViewerBadge_container__1QSob {
+    visibility: hidden;
+}
+
+.stMarkdown {
+    line-height: 1.6;
+}
+
+.stSpinner > div > div > span {
+    color: #3b82f6 !important;
+}
+
+.stDataFrame {
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+[data-testid="dataframe"] {
+    background: linear-gradient(135deg, #1e293b 0%, #334155 100%) !important;
+}
+
+hr {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg, rgba(148, 163, 184, 0), rgba(148, 163, 184, 0.2), rgba(148, 163, 184, 0));
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SESSION STATE INITIALIZATION
+# ═══════════════════════════════════════════════════════════════════════════════
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "api_key" not in st.session_state:
+    st.session_state.api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# IMPORTS & DEPENDENCIES
+# ═══════════════════════════════════════════════════════════════════════════════
+try:
+    from google import genai
+    from streamlit_option_menu import option_menu
+    from db import get_videos_collection
+    from query_db import (
+        search_videos,
+        get_videos_by_channel,
+        get_top_videos,
+        get_recent_videos,
+        count_videos_by_channel,
+        get_videos_by_date_range,
+        get_channel_stats,
+        get_videos_last_24h,
+    )
+    import pandas as pd
+    import plotly.graph_objects as go
+    import plotly.express as px
+except ImportError as e:
+    st.error(f"❌ Missing dependency: {e}")
+    st.stop()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GOOGLE API SETUP
+# ═══════════════════════════════════════════════════════════════════════════════
+if not st.session_state.api_key:
+    st.error("❌ GOOGLE_API_KEY or GEMINI_API_KEY not found in .env")
+    st.info("Set GOOGLE_API_KEY (or GEMINI_API_KEY) in your .env file to use the chatbot")
+    st.stop()
+
+gemini_client = genai.Client(api_key=st.session_state.api_key)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AGENT TOOLS (TOOLS FOR AGENTIC AI)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def tool_count_videos_by_channel(channel_name: str) -> dict:
+    """Count total videos from a specific channel"""
+    try:
+        count = count_videos_by_channel(channel_name)
+        return {"status": "success", "count": count, "channel": channel_name}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def tool_get_videos_last_24h(channel_name: str = None) -> dict:
+    """Get videos published in the last 24 hours"""
+    try:
+        start_time = datetime.utcnow() - timedelta(hours=24)
+        videos = get_videos_by_date_range(start_time, datetime.utcnow(), channel=channel_name)
+        return {
+            "status": "success",
+            "count": len(videos),
+            "videos": videos[:10],  # Return top 10
+            "channel": channel_name or "All"
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def tool_search_videos(query: str, limit: int = 10) -> dict:
+    """Search videos by keyword/topic"""
+    try:
+        results = search_videos(text_query=query, limit=limit)
+        return {
+            "status": "success",
+            "count": len(results),
+            "results": results,
+            "query": query
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def tool_get_popular_videos(limit: int = 10) -> dict:
+    """Get most popular videos by view count"""
+    try:
+        videos = get_top_videos(limit=limit)
+        return {
+            "status": "success",
+            "count": len(videos),
+            "videos": videos,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def tool_get_channel_statistics() -> dict:
+    """Get aggregated statistics for all channels"""
+    try:
+        stats = get_channel_stats()
+        return {
+            "status": "success",
+            "statistics": stats
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def tool_get_recent_videos(channel_name: str = None, limit: int = 5) -> dict:
+    """Get recently published videos"""
+    try:
+        videos = get_recent_videos(limit=limit, channel=channel_name)
+        return {
+            "status": "success",
+            "count": len(videos),
+            "videos": videos,
+            "channel": channel_name or "All"
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# Tool mapping for AI to use
+AVAILABLE_TOOLS = {
+    "count_videos": tool_count_videos_by_channel,
+    "videos_last_24h": tool_get_videos_last_24h,
+    "search_videos": tool_search_videos,
+    "popular_videos": tool_get_popular_videos,
+    "channel_stats": tool_get_channel_statistics,
+    "recent_videos": tool_get_recent_videos,
+}
+
+TOOLS_DESCRIPTION = """
+You have access to these tools to query YouTube video data from MongoDB:
+
+1. count_videos(channel_name) - Count total videos from a channel (e.g., "Bloomberg" or "ANI News India")
+2. videos_last_24h(channel_name=None) - Get videos from last 24 hours
+3. search_videos(query, limit) - Search videos by keyword/topic
+4. popular_videos(limit) - Get most popular videos by views
+5. channel_stats() - Get statistics across all channels
+6. recent_videos(channel_name=None, limit) - Get recently published videos
+
+When answering questions about video counts, channels, trends, or specific videos:
+- Use the appropriate tool to query real data
+- Base your answer on the actual query results
+- Format results clearly with numbers and examples
+"""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AGENTIC AI LOGIC
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _safe_generate(prompt: str) -> tuple[str | None, str | None]:
+    """Safely call Gemini and normalize the response text."""
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt,
+        )
+    except Exception as exc:
+        return None, f"❌ Gemini error: {exc}"
+
+    text = getattr(response, "text", None)
+    if text:
+        return text, None
+
+    return None, "❌ Gemini returned an empty response."
+
+
+def process_user_message_with_agent(user_message: str) -> str:
+    """Process user message using agentic AI pattern"""
+
+    # First, ask Gemini what tools to use
+    prompt = f"""{TOOLS_DESCRIPTION}
+
+User question: {user_message}
+
+Based on the user's question, decide which tools to use and provide the answer.
+If a tool call is needed, use this format:
+[TOOL_CALL: tool_name(param1, param2)]
+
+Then provide the final answer based on the tool results."""
+
+    ai_response, error = _safe_generate(prompt)
+    if error:
+        return error
+    if not ai_response:
+        return "❌ Gemini did not return a response. Please try again."
+
+    # Parse tool calls if present
+    if "[TOOL_CALL:" in ai_response:
+        # Extract tool calls
+        import re
+        tool_calls = re.findall(r'\[TOOL_CALL: (\w+)\((.*?)\)\]', ai_response)
+        
+        tool_results = {}
+        for tool_name, params_str in tool_calls:
+            if tool_name in AVAILABLE_TOOLS:
+                # Parse parameters (simple parsing)
+                raw_params = [p.strip().strip('"\'') for p in params_str.split(",") if p.strip()]
+                params = [int(p) if p.isdigit() else p for p in raw_params]
+                try:
+                    tool_func = AVAILABLE_TOOLS[tool_name]
+                    result = tool_func(*params) if params else tool_func()
+                    tool_results[tool_name] = result
+                except Exception as e:
+                    tool_results[tool_name] = {"status": "error", "message": str(e)}
+        
+        # If we got tool results, ask Gemini to provide final answer
+        if tool_results:
+            final_prompt = f"""{user_message}
+
+Tool Results:
+{str(tool_results)}
+
+Please provide a detailed, well-formatted answer based on these results."""
+            final_text, final_error = _safe_generate(final_prompt)
+            if final_error:
+                return final_error
+            return final_text or "❌ Gemini did not return a response. Please try again."
+    
+    return ai_response
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN UI LAYOUT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Header
+col1, col2 = st.columns([0.9, 0.1])
+with col1:
+    st.markdown("# 🎬 YouTube Intelligence Hub")
+    st.markdown("*Real-time YouTube analytics & AI-powered insights*")
+with col2:
+    st.markdown("")
+    st.markdown("")
+    if st.button("🔄", help="Refresh data"):
+        st.rerun()
+
+st.divider()
+
+# Navigation
+selected = option_menu(
+    menu_title=None,
+    options=["🤖 Chat Assistant", "📊 Analytics", "🎥 Videos", "⚙️ Settings"],
+    icons=["chat-dots-fill", "bar-chart-fill", "film", "gear-fill"],
+    orientation="horizontal",
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE 1: CHAT ASSISTANT
+# ═══════════════════════════════════════════════════════════════════════════════
+if selected == "🤖 Chat Assistant":
+    st.subheader("AI Chatbot - Ask anything about YouTube videos!")
+    
+    # Example prompts
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("📈 How many videos from Bloomberg?"):
+            st.session_state.messages.append({
+                "role": "user",
+                "content": "How many videos from Bloomberg Markets channel have we saved?"
+            })
+    with col2:
+        if st.button("🌍 USA videos in last 24h"):
+            st.session_state.messages.append({
+                "role": "user",
+                "content": "Give me a count of videos published about USA in ANI News India channel in the last 24 hours"
+            })
+    with col3:
+        if st.button("📊 Popular videos"):
+            st.session_state.messages.append({
+                "role": "user",
+                "content": "What are the most popular videos by view count?"
+            })
+    
+    st.markdown("---")
+    
+    # Display chat history
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"], avatar="🧑" if message["role"] == "user" else "🤖"):
+            st.markdown(message["content"])
+    
+    # Chat input
+    user_input = st.chat_input("Ask me about YouTube videos...")
+    
+    if user_input:
+        # Add user message
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        
+        with st.chat_message("user", avatar="🧑"):
+            st.markdown(user_input)
+        
+        # Get AI response
+        with st.chat_message("assistant", avatar="🤖"):
+            with st.spinner("⚡ Processing your request..."):
+                response = process_user_message_with_agent(user_input)
+                st.markdown(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE 2: ANALYTICS
+# ═══════════════════════════════════════════════════════════════════════════════
+elif selected == "📊 Analytics":
+    try:
+        st.subheader("📊 YouTube Channel Analytics")
+        
+        # Get stats
+        col1, col2, col3, col4 = st.columns(4)
+        
+        collection = get_videos_collection()
+        total_videos = collection.count_documents({})
+        
+        with col1:
+            st.metric("📊 Total Videos", total_videos, delta=None)
+        
+        with col2:
+            bloomberg_count = count_videos_by_channel("Bloomberg")
+            st.metric("📺 Bloomberg Videos", bloomberg_count)
+        
+        with col3:
+            ani_count = count_videos_by_channel("ANI News India")
+            st.metric("🇮🇳 ANI News Videos", ani_count)
+        
+        with col4:
+            videos_24h = len(get_videos_last_24h())
+            st.metric("⏰ Last 24h", videos_24h)
+        
+        st.divider()
+        
+        # Popular videos
+        col1, col2 = st.columns([1.5, 1])
+        
+        with col1:
+            st.markdown("### 🔥 Top 10 Most Viewed Videos")
+            popular = get_top_videos(limit=10)
+            if popular:
+                df_popular = pd.DataFrame([
+                    {
+                        "Title": v.get("title", "N/A")[:50] + "...",
+                        "Views": f"{v.get('view_count', 0):,}",
+                        "Likes": f"{v.get('like_count', 0):,}",
+                        "Channel": v.get("channel_id", "N/A")
+                    }
+                    for v in popular
+                ])
+                st.dataframe(df_popular, use_container_width=True, hide_index=True)
+        
+        with col2:
+            st.markdown("### 📊 Videos by Channel")
+            try:
+                stats = get_channel_stats()
+                if stats:
+                    fig = go.Figure(data=[
+                        go.Bar(
+                            x=list(stats.keys()),
+                            y=list(stats.values()),
+                            marker_color=['#3b82f6', '#ef4444'],
+                        )
+                    ])
+                    fig.update_layout(
+                        height=350,
+                        template="plotly_dark",
+                        showlegend=False,
+                        margin=dict(l=0, r=0, t=20, b=0),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            except:
+                st.info("No channel data available yet")
+        
+        st.divider()
+        
+        # Recently added
+        st.markdown("### ⏱️ Recently Added Videos")
+        recent = get_recent_videos(limit=10)
+        if recent:
+            for i, video in enumerate(recent[:10], 1):
+                with st.expander(f"🎥 {i}. {video.get('title', 'No title')[:60]}..."):
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.write(f"**Description:** {video.get('description', 'N/A')[:200]}...")
+                        st.write(f"**Channel:** {video.get('channel_id', 'N/A')}")
+                        st.write(f"**Uploaded:** {video.get('upload_date', 'N/A')}")
+                    with col2:
+                        st.metric("👁️ Views", f"{video.get('view_count', 0):,}")
+                        st.metric("👍 Likes", f"{video.get('like_count', 0):,}")
+        
+    except Exception as e:
+        st.error(f"Error loading analytics: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE 3: VIDEOS BROWSER
+# ═══════════════════════════════════════════════════════════════════════════════
+elif selected == "🎥 Videos":
+    st.subheader("🎥 Video Browser")
+    
+    # Filter options
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        search_query = st.text_input("🔍 Search videos...", placeholder="Enter keyword")
+    
+    with col2:
+        channel_filter = st.selectbox(
+            "📺 Filter by channel",
+            ["All Channels", "Bloomberg", "ANI News India"]
+        )
+    
+    with col3:
+        sort_by = st.selectbox("Sort by", ["Most Recent", "Most Viewed", "Most Liked"])
+    
+    st.divider()
+    
+    # Get videos
+    try:
+        if search_query:
+            videos = search_videos(text_query=search_query, limit=20)
+        elif channel_filter != "All Channels":
+            videos = get_videos_by_channel(channel_filter, limit=20)
+        else:
+            videos = get_recent_videos(limit=20)
+        
+        if not videos:
+            st.info("No videos found matching your criteria")
+        else:
+            # Sort
+            if sort_by == "Most Viewed":
+                videos = sorted(videos, key=lambda x: x.get("view_count", 0), reverse=True)
+            elif sort_by == "Most Liked":
+                videos = sorted(videos, key=lambda x: x.get("like_count", 0), reverse=True)
+            
+            # Display
+            for i, video in enumerate(videos[:20], 1):
+                st.markdown(f"""
+                **{i}. {video.get('title', 'No title')}**
+
+                🔗 [Watch on YouTube](https://www.youtube.com/watch?v={video.get('video_id', '')})
+                
+                📺 **Channel:** {video.get('channel_id', 'N/A')} | 👁️ **Views:** {video.get('view_count', 0):,} | 👍 **Likes:** {video.get('like_count', 0):,}
+                
+                📅 **Uploaded:** {video.get('upload_date', 'N/A')}
+                """)
+                st.caption(f"_{video.get('description', 'No description')[:150]}..._")
+                st.divider()
+    
+    except Exception as e:
+        st.error(f"Error loading videos: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE 4: SETTINGS
+# ═══════════════════════════════════════════════════════════════════════════════
+elif selected == "⚙️ Settings":
+    st.subheader("⚙️ Settings & Information")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 📡 System Status")
+        try:
+            collection = get_videos_collection()
+            status = "✅ Connected"
+            count = collection.count_documents({})
+            st.success(f"{status}")
+            st.metric("Database Documents", count)
+        except Exception as e:
+            st.error(f"Database Error: {e}")
+    
+    with col2:
+        st.markdown("### 🔑 API Configuration")
+        if st.session_state.api_key:
+            st.success("✅ Google API configured")
+            if st.button("Clear API Key"):
+                st.session_state.api_key = ""
+                st.rerun()
+        else:
+            st.warning("⚠️ Google API key not configured")
+    
+    st.divider()
+    
+    st.markdown("### 📚 About")
+    st.info("""
+    **YouTube Intelligence Hub** is a production-ready AI-powered analytics platform that:
+    
+    - 🎬 Captures real-time YouTube video publications via webhooks
+    - 💾 Stores metadata in MongoDB with intelligent schema
+    - 🤖 Provides agentic AI chatbot powered by Google Gemini
+    - 📊 Offers advanced analytics and video browsing
+    - 🚀 Deployed as serverless functions on Google Cloud
+    
+    **Features:**
+    - Agent-based AI with tool access to database
+    - Real-time data ingestion (no polling)
+    - RESTful API with authentication
+    - Beautiful, responsive Streamlit UI
+    """)
+    
+    st.divider()
+    st.markdown("""
+    **Built with:** Python, FastAPI, MongoDB, Google Generative AI, Streamlit
+    
+    **Version:** 1.0.0
+    """)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FOOTER
+# ═══════════════════════════════════════════════════════════════════════════════
+st.divider()
+st.markdown("""
+<div style="text-align: center; color: #94a3b8; font-size: 0.85rem;">
+    🚀 YouTube Intelligence Hub | Made with ❤️ for CloudNative AI Data Engineers
+</div>
+""", unsafe_allow_html=True)

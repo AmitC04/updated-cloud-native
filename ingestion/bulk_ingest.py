@@ -59,7 +59,7 @@ def ingest_channel(channel_url: str, limit: int = DEFAULT_LIMIT):
     video_ids = fetch_video_ids(channel_url, limit)
     if not video_ids:
         log.error("No videos found. Skipping.")
-        return
+        return 0, 0, 0
 
     inserted = updated = failed = 0
     for i, vid_id in enumerate(video_ids, 1):
@@ -82,6 +82,7 @@ def ingest_channel(channel_url: str, limit: int = DEFAULT_LIMIT):
         time.sleep(2) if i % 10 == 0 else time.sleep(0.5)
 
     log.info(f"=== Done | Inserted: {inserted} | Updated: {updated} | Failed: {failed} ===")
+    return inserted, updated, failed
 
 
 def main():

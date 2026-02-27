@@ -204,11 +204,18 @@ def get_trending_videos(days: int = 7, limit: int = 20) -> List[Dict]:
     return results
 
 
-def get_videos_by_date_range(date_from: str, date_to: str, limit: int = 50) -> List[Dict]:
+def get_videos_by_date_range(date_from, date_to, limit: int = 50, channel: str = None) -> List[Dict]:
     """
     Get videos within a specific date range
+    date_from and date_to can be datetime objects or ISO format strings
     """
     collection = get_videos_collection()
+    
+    # Convert datetime objects to ISO format strings if needed
+    if isinstance(date_from, datetime):
+        date_from = date_from.isoformat()
+    if isinstance(date_to, datetime):
+        date_to = date_to.isoformat()
     
     query_filter = {
         "upload_date": {
@@ -216,6 +223,10 @@ def get_videos_by_date_range(date_from: str, date_to: str, limit: int = 50) -> L
             "$lte": date_to
         }
     }
+    
+    # Add channel filter if specified
+    if channel:
+        query_filter["channel"] = {"$regex": channel, "$options": "i"}
     
     cursor = collection.find(query_filter).sort("upload_date", -1).limit(limit)
     results = list(cursor)
@@ -243,3 +254,49 @@ def get_most_recent_entries(limit: int = 10) -> List[Dict]:
             del result["_id"]
     
     return results
+
+
+def get_recent_videos(limit: int = 10, channel: str = None) -> List[Dict]:
+    """Get recently published videos, optionally filtered by channel"""
+    collection = get_videos_collection()
+    
+    query_filter = {}
+    if channel:
+        query_filter["channel"] = {"$regex": channel, "$options": "i"}
+    
+    cursor = collection.find(query_filter).sort("upload_date", -1).limit(limit)
+    results = list(cursor)
+    
+    for result in results:
+        if "_id" in result:
+            del result["_id"]
+    
+    return results
+
+
+def count_videos_by_channel(channel: str) -> int:
+    """Count total videos from a specific channel"""
+    collection = get_videos_collection()
+    
+    query_filter = {"channel": {"$regex": channel, "$options": "i"}}
+    return collection.count_documents(query_filter)
+
+
+def get_channel_stats() -> Dict:
+    """Get statistics for each channel"""
+    collection = get_videos_collection()
+    
+    stats = {}
+    channels = collection.distinct("channel")
+    
+    for channel in channels:
+        count = collection.count_documents({"channel": channel})
+        stats[channel] = count
+    
+    return stats
+
+
+def get_videos_last_24h(channel: str = None) -> List[Dict]:
+    """Get videos published in the last 24 hours"""
+    start_time = datetime.utcnow() - timedelta(hours=24)
+    return get_videos_by_date_range(start_time, datetime.utcnow(), limit=50, channel=channel)
